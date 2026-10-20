@@ -1,5 +1,4 @@
 import gsap from "gsap";
-import { performanceProfile } from "../platform/performanceProfile.js";
 
 /**
  * Controls the intro rain-on-glass post pass (no separate renderer).
@@ -28,10 +27,14 @@ export function createRainGlassIntro({
   glass.dropSize.value = dropSize;
   glass.amount.value = 1;
 
-  // Shed expensive steady-state passes while the glass is fullscreen — the
-  // effect blurs/distorts everything anyway, so DoF and lensflare are wasted.
-  pipeline?.perf?.setDofEnabled?.(false);
-  pipeline?.perf?.setLensflareEnabled?.(false);
+  // The glass blurs/distorts everything, so lensflare is invisible under it. Zero its strength
+  // rather than removing the pass: a graph change here recompiled the post chain on the first
+  // intro frame and again at ENTER (sync pipeline creation = frozen frames on Windows).
+  const lensflareStrength = pipeline?.lensflare?.strength ?? null;
+  const savedLensflareStrength = lensflareStrength?.value ?? 0;
+  if (lensflareStrength) {
+    lensflareStrength.value = 0;
+  }
 
   function update() {
     // Animation is driven by TSL `time` inside the shader graph.
@@ -67,8 +70,9 @@ export function createRainGlassIntro({
     fadeTween?.kill();
     fadeTween = null;
     glass.amount.value = 0;
-    pipeline?.perf?.setDofEnabled?.(performanceProfile.dof);
-    pipeline?.perf?.setLensflareEnabled?.(performanceProfile.lensflare);
+    if (lensflareStrength) {
+      lensflareStrength.value = savedLensflareStrength;
+    }
     pipeline?.disposeIntroRainGlass?.();
   }
 

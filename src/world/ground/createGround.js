@@ -13,6 +13,7 @@ import {
 import { createRainRipples } from "../../tsl/rainRipples.js";
 import { performanceProfile } from "../../platform/performanceProfile.js";
 import { RAIN_LAYER } from "../weather/createCollisionRain.js";
+import { compileInContext } from "../../runtime/shaderCompile/compileWindow.js";
 
 const ALBEDO_PATH = "/textures/wet-puddles-albedo.jpg";
 const ROUGHNESS_PATH = "/textures/wet-puddles-roughness.jpg";
@@ -29,6 +30,14 @@ const _rotationMatrix = new THREE.Matrix4();
 const _reflectorPlane = new THREE.Plane();
 const _clipPlane = new THREE.Vector4();
 const _q = new THREE.Vector4();
+
+function readStorage(key) {
+  try {
+    return globalThis.localStorage?.getItem(key) ?? null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Wet reflective ground. Manual planar reflection (separate renderer.render)
@@ -187,6 +196,63 @@ export function createGround(scene, {
     uReflectionEnabled.needsUpdate = true;
   }
 
+  // Bench switch: measure startup without the mirror pass (the ground loses its reflection)
+  if (readStorage("ground.reflection") === "0") {
+    setReflectionEnabled(false);
+  }
+
+  let sceneMRT = null;
+
+  /**
+   * three keys every node build and pipeline by render context: the target's attachment layout,
+   * the MRT and the call depth. A plain half-float mirror target is its own context, so every
+   * material it draws was built and compiled a second time. Shaped like the scene pass (same
+   * attachments, names and formats) and drawn with its MRT, the mirror lands in the scene pass's
+   * context and reuses all of it. Only the colour attachment is sampled; the others are scratch.
+   */
+  function useSceneContext(passNode) {
+    if (!passNode || readStorage("ground.mirrorSceneContext") === "0") {
+      return;
+    }
+
+    const sceneTarget = passNode.renderTarget;
+    renderTarget.texture.name = sceneTarget.texture.name;
+    renderTarget.texture.type = sceneTarget.texture.type;
+    renderTarget.samples = sceneTarget.samples;
+    for (const sceneTexture of sceneTarget.textures.slice(1)) {
+      const attachment = renderTarget.texture.clone();
+      attachment.name = sceneTexture.name;
+      attachment.type = sceneTexture.type;
+      attachment.format = sceneTexture.format;
+      renderTarget.textures.push(attachment);
+    }
+    sceneMRT = passNode.getMRT();
+  }
+
+  // Compiles everything the mirror draws, in the mirror's own context (half-float RT, no MRT,
+  // depth 0, ground hidden). Culling is off during the warm, so the camera pose doesn't matter.
+  // Sharing the scene pass's context, the scene pass warm already built and compiled all of it.
+  function warmReflection(renderer) {
+    syncReflectionSize(renderer);
+    mirrorCamera.layers.disable(RAIN_LAYER);
+    if (sceneMRT !== null || uReflectionEnabled.value < 0.5) {
+      return Promise.resolve();
+    }
+
+    return compileInContext(renderer, {
+      scene,
+      camera: mirrorCamera,
+      renderTarget,
+      applyState: () => {
+        const wasVisible = mesh.visible;
+        mesh.visible = false;
+        return () => {
+          mesh.visible = wasVisible;
+        };
+      },
+    });
+  }
+
   function updateReflection(renderer, camera) {
     if (uReflectionEnabled.value < 0.5) {
       return;
@@ -264,7 +330,7 @@ export function createGround(scene, {
     const prevMRT = renderer.getMRT?.() ?? null;
     const prevAutoClear = renderer.autoClear;
 
-    renderer.setMRT?.(null);
+    renderer.setMRT?.(sceneMRT);
     renderer.setRenderTarget(renderTarget);
     renderer.autoClear = true;
     renderer.render(scene, mirrorCamera);
@@ -290,6 +356,7 @@ export function createGround(scene, {
     material,
     renderTarget,
     uniforms: {
+      time: uTime,
       uvRepeat: uUvRepeat,
       roughnessScale: uRoughnessScale,
       reflectionStrength: uReflectionStrength,
@@ -309,6 +376,8 @@ export function createGround(scene, {
     setRippleSpeed,
     setReflectionEnabled,
     syncReflectionSize,
+    useSceneContext,
+    warmReflection,
     updateReflection,
     dispose,
   };

@@ -18,6 +18,11 @@ import {
 
 // Shared drop graph (rocksdanister / BigWings MovingDropLayer).
 // https://github.com/rocksdanister/rain
+//
+// Every helper has a layout, so it is emitted once per shader as a WGSL function. Without one, TSL
+// inlines the body at each call site: the finite-difference normal evaluates CarDrops 3× and each
+// runs MovingDropLayer twice, which put 6 copies of the drop layer (plus N13 / N / Saw) into every
+// car fragment shader (~50 KB each, ×3 render contexts, ×13 car materials).
 
 const N13 = /*#__PURE__*/ Fn(([p]) => {
   const p3 = fract(vec3(p, p, p).mul(vec3(0.1031, 0.11369, 0.13787)));
@@ -29,15 +34,30 @@ const N13 = /*#__PURE__*/ Fn(([p]) => {
       p3Dot.y.add(p3Dot.z).mul(p3Dot.x),
     ),
   );
+}).setLayout({
+  name: "SurfaceRainN13",
+  type: "vec3",
+  inputs: [{ name: "p", type: "float" }],
 });
 
-const N = /*#__PURE__*/ Fn(([t]) => fract(sin(t.mul(12345.564)).mul(7658.76)));
+const N = /*#__PURE__*/ Fn(([t]) => fract(sin(t.mul(12345.564)).mul(7658.76))).setLayout({
+  name: "SurfaceRainN",
+  type: "float",
+  inputs: [{ name: "t", type: "float" }],
+});
 
 const Saw = /*#__PURE__*/ Fn(([b, t]) =>
   smoothstep(float(0), b, t).mul(smoothstep(float(1), b, t)),
-);
+).setLayout({
+  name: "SurfaceRainSaw",
+  type: "float",
+  inputs: [
+    { name: "b", type: "float" },
+    { name: "t", type: "float" },
+  ],
+});
 
-export const MovingDropLayer = /*#__PURE__*/ Fn(([uvIn, t, size, dropletMix = float(1)]) => {
+export const MovingDropLayer = /*#__PURE__*/ Fn(([uvIn, t, size, dropletMix]) => {
   const UV = uvIn;
   const uv = uvIn.toVar();
 
@@ -89,6 +109,15 @@ export const MovingDropLayer = /*#__PURE__*/ Fn(([uvIn, t, size, dropletMix = fl
   const mask = m.add(trail.mul(0.35));
 
   return vec2(mask, edge);
+}).setLayout({
+  name: "SurfaceRainMovingDropLayer",
+  type: "vec2",
+  inputs: [
+    { name: "uvIn", type: "vec2" },
+    { name: "t", type: "float" },
+    { name: "size", type: "float" },
+    { name: "dropletMix", type: "float" },
+  ],
 });
 
 const StaticDrops = /*#__PURE__*/ Fn(([uvIn, t, size]) => {
@@ -102,23 +131,54 @@ const StaticDrops = /*#__PURE__*/ Fn(([uvIn, t, size]) => {
   return pow(smoothstep(float(0.4).mul(size), float(0), d), float(1.8))
     .mul(fract(n.z.mul(10)))
     .mul(fade);
+}).setLayout({
+  name: "SurfaceRainStaticDrops",
+  type: "float",
+  inputs: [
+    { name: "uvIn", type: "vec2" },
+    { name: "t", type: "float" },
+    { name: "size", type: "float" },
+  ],
 });
 
-export const Drops = /*#__PURE__*/ Fn(([uv, t, l0, l1, l2, size, dropletMix = float(1)]) => {
+export const Drops = /*#__PURE__*/ Fn(([uv, t, l0, l1, l2, size, dropletMix]) => {
   const s = StaticDrops(uv, t, size).mul(l0);
   const m1 = MovingDropLayer(uv, t, size, dropletMix);
   const m2 = MovingDropLayer(uv.mul(1.85), t, size, dropletMix);
 
   const c = smoothstep(float(0.3), float(1), s.add(m1.x).add(m2.x));
   return vec2(c, max(m1.y.mul(l0), m2.y.mul(l1)));
+}).setLayout({
+  name: "SurfaceRainDrops",
+  type: "vec2",
+  inputs: [
+    { name: "uv", type: "vec2" },
+    { name: "t", type: "float" },
+    { name: "l0", type: "float" },
+    { name: "l1", type: "float" },
+    { name: "l2", type: "float" },
+    { name: "size", type: "float" },
+    { name: "dropletMix", type: "float" },
+  ],
 });
 
 /** Car paint/glass: moving layers only (static drops always zero on car). */
-export const CarDrops = /*#__PURE__*/ Fn(([uv, t, l1, l2, size, dropletMix = float(1)]) => {
+export const CarDrops = /*#__PURE__*/ Fn(([uv, t, l1, l2, size, dropletMix]) => {
   const m1 = MovingDropLayer(uv, t, size, dropletMix);
   const m2 = MovingDropLayer(uv.mul(1.85), t, size, dropletMix);
   const c = smoothstep(float(0.3), float(1), m1.x.add(m2.x));
   return vec2(c, max(m1.y.mul(l1), m2.y.mul(l2)));
+}).setLayout({
+  name: "SurfaceRainCarDrops",
+  type: "vec2",
+  inputs: [
+    { name: "uv", type: "vec2" },
+    { name: "t", type: "float" },
+    { name: "l1", type: "float" },
+    { name: "l2", type: "float" },
+    { name: "size", type: "float" },
+    { name: "dropletMix", type: "float" },
+  ],
 });
 
 export function getRainLayerWeights(rainAmount) {

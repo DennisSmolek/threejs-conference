@@ -66,7 +66,12 @@ function patchKTX2UncompressedTextures() {
   patchKTX2UncompressedTextures.applied = true;
 }
 
-export function getGltfLoader(renderer) {
+/**
+ * `featureSource` is the renderer, or a promise of something KTX2Loader.detectSupport accepts
+ * (see bootstrap/earlyAdapter.js). Only the first KTX2 transcode waits for it, so downloads,
+ * Draco and image decoding start before the renderer exists.
+ */
+export function getGltfLoader(featureSource) {
   patchKTX2UncompressedTextures();
 
   // Avoid disposing mid-flight when city + car load in parallel.
@@ -81,7 +86,12 @@ export function getGltfLoader(renderer) {
   ktx2Loader.setTranscoderPath("/libs/basis/");
   // Keep hardware compression (BC/ETC2/ASTC). Do NOT force RGBA32 —
   // that was the walk-mode FPS collapse from texture bandwidth.
-  ktx2Loader.detectSupport(renderer);
+  const supportDetected = Promise.resolve(featureSource).then((source) => {
+    ktx2Loader.detectSupport(source);
+  });
+  const createTexture = ktx2Loader._createTexture;
+  ktx2Loader._createTexture = (...args) =>
+    supportDetected.then(() => createTexture.apply(ktx2Loader, args));
 
   gltfLoader = new GLTFLoader();
   gltfLoader.setDRACOLoader(dracoLoader);

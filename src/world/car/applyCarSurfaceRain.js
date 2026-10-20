@@ -1,6 +1,12 @@
 import * as THREE from "three/webgpu";
 import {
   float,
+  materialColor,
+  materialEmissive,
+  materialMetalness,
+  materialOpacity,
+  materialReference,
+  materialRoughness,
   mix,
   normalMap,
   texture,
@@ -149,22 +155,15 @@ function wireSurfaceRain(
   { wetRoughness, normalStrength, wetBrighten = null },
 ) {
   // Albedo / PBR maps stay on UV0; rain uses the model secondary UV (TEXCOORD_1).
+  // Scalars and colours come from material uniforms, not JS constants, so car materials with the
+  // same set of maps generate identical WGSL and share one compiled shader.
   const uvNode = uv();
   const rain = evaluateCarSurfaceRain(uv(1), uniforms);
   const rainAmount = rain.mask.mul(uniforms.uIntensity);
 
-  const baseRoughSample = material.roughnessMap
-    ? texture(material.roughnessMap, uvNode).g
-    : float(1);
-  const baseRoughness = baseRoughSample.mul(float(material.roughness ?? 0.5));
-
-  const baseMetalSample = material.metalnessMap
-    ? texture(material.metalnessMap, uvNode).b
-    : float(1);
-  const baseMetalness = baseMetalSample.mul(float(material.metalness ?? 0));
-
-  material.roughnessNode = mix(baseRoughness, wetRoughness, rainAmount);
-  material.metalnessNode = baseMetalness;
+  // roughness × roughnessMap.g / metalness × metalnessMap.b, the same as three's own nodes
+  material.roughnessNode = mix(materialRoughness, wetRoughness, rainAmount);
+  material.metalnessNode = materialMetalness;
 
   if (material.normalMap) {
     const normalSample = texture(material.normalMap, uvNode);
@@ -180,14 +179,10 @@ function wireSurfaceRain(
     );
   }
 
-  const opacity = float(material.opacity ?? 1);
-  let baseColor;
-  if (material.map) {
-    baseColor = texture(material.map, uvNode);
-  } else {
-    const c = material.color;
-    baseColor = vec4(float(c.r), float(c.g), float(c.b), opacity);
-  }
+  // With a map the base colour is the map alone (color is ignored, as before)
+  const baseColor = material.map
+    ? texture(material.map, uvNode)
+    : vec4(materialColor, materialOpacity);
 
   // Dark glass needs a wet-bead brighten so drops read without relying only on specular.
   if (wetBrighten) {
@@ -202,13 +197,11 @@ function wireSurfaceRain(
 
   if (material.emissiveMap) {
     material.emissiveNode = texture(material.emissiveMap, uvNode).rgb.mul(
-      float(material.emissiveIntensity ?? 1),
+      materialReference("emissiveIntensity", "float"),
     );
   } else if ((material.emissiveIntensity ?? 0) > 0) {
-    const e = material.emissive;
-    material.emissiveNode = vec3(float(e.r), float(e.g), float(e.b)).mul(
-      float(material.emissiveIntensity ?? 1),
-    );
+    // emissive × emissiveIntensity
+    material.emissiveNode = materialEmissive;
   }
 
   material.needsUpdate = true;
@@ -220,6 +213,9 @@ function wireSurfaceRain(
 export function applyCarSurfaceRain(carRoot) {
   const uniforms = createSurfaceRainUniforms();
   const convertedMaterials = new Set();
+  // One node material per source material: meshes sharing a glTF material share its rain
+  // material too (each node material is its own node build per render context)
+  const nodeMaterialsBySource = new Map();
   let paintCount = 0;
   let glassCount = 0;
 
@@ -234,27 +230,31 @@ export function applyCarSurfaceRain(carRoot) {
         return;
       }
 
-      const nodeMaterial = isGlass
-        ? ensureGlassNodeMaterial(material)
-        : ensurePaintNodeMaterial(material);
-      if (isGlass) {
-        applyGlassLook(nodeMaterial);
+      let nodeMaterial = nodeMaterialsBySource.get(material);
+      if (!nodeMaterial) {
+        nodeMaterial = isGlass
+          ? ensureGlassNodeMaterial(material)
+          : ensurePaintNodeMaterial(material);
+        if (isGlass) {
+          applyGlassLook(nodeMaterial);
+        }
+        wireSurfaceRain(
+          nodeMaterial,
+          uniforms,
+          isGlass
+            ? {
+                wetRoughness: uniforms.uGlassWetRoughness,
+                normalStrength: uniforms.uGlassNormalStrength,
+                wetBrighten: uniforms.uGlassWetBrighten,
+              }
+            : {
+                wetRoughness: uniforms.uWetRoughness,
+                normalStrength: uniforms.uNormalStrength,
+              },
+        );
+        nodeMaterialsBySource.set(material, nodeMaterial);
+        convertedMaterials.add(nodeMaterial);
       }
-      wireSurfaceRain(
-        nodeMaterial,
-        uniforms,
-        isGlass
-          ? {
-              wetRoughness: uniforms.uGlassWetRoughness,
-              normalStrength: uniforms.uGlassNormalStrength,
-              wetBrighten: uniforms.uGlassWetBrighten,
-            }
-          : {
-              wetRoughness: uniforms.uWetRoughness,
-              normalStrength: uniforms.uNormalStrength,
-            },
-      );
-      convertedMaterials.add(nodeMaterial);
 
       if (isGlass) {
         glassCount += 1;

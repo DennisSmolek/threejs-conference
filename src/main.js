@@ -1,7 +1,16 @@
 import "./ui/core/global.css";
 import * as THREE from "three/webgpu";
 import { createScene } from "./world/scene.js";
-import { createWorld, createLightingController } from "./world/createWorld.js";
+import {
+  createWorld,
+  createLightingController,
+  loadWorldAssets,
+} from "./world/createWorld.js";
+import {
+  adapterFeatureSource,
+  getEarlyAdapter,
+  isParallelAssetLoadEnabled,
+} from "./bootstrap/earlyAdapter.js";
 import { applyEnvironmentMap } from "./world/envMap.js";
 import { createPostProcessing } from "./post/postprocessing.js";
 import { createLoaderOverlay } from "./app/createLoaderOverlay.js";
@@ -19,10 +28,7 @@ import {
 } from "./bootstrap/createRenderer.js";
 import { createCameraDirector } from "./runtime/createCameraDirector.js";
 import { createRenderLoop } from "./runtime/createRenderLoop.js";
-import {
-  compileDeferredStartup,
-  finalizeStartupLighting,
-} from "./runtime/warmup.js";
+import { finalizeStartupLighting } from "./runtime/warmup.js";
 import { createPerformanceDevTools } from "./debug/createPerformanceDevTools.js";
 import { createInspectorSession } from "./debug/createInspectorSession.js";
 import {
@@ -38,7 +44,6 @@ import { createAdaptiveDprController } from "./platform/adaptiveDpr.js";
 import {
   performanceProfile,
   applyDevicePerformanceDefaults,
-  shouldCompileBeforeRenderLoop,
 } from "./platform/performanceProfile.js";
 import { getStoredLookPreset, isDevelopmentModeEnabled } from "./platform/userPreferences.js";
 import {
@@ -68,7 +73,22 @@ async function init(loaderOverlay) {
   loaderOverlay.setProgress(0.1);
   loaderOverlay.setStatus("SPINNING UP RENDERER");
 
-  const { renderer } = await createRenderer();
+  // WebGPU start-up takes seconds in a fresh browser: load the world's assets meanwhile. KTX2
+  // transcoding reads the GPU's formats from the adapter, or from the renderer if there is none.
+  const rendererPending = createRenderer();
+  const parallelAssets = isParallelAssetLoadEnabled();
+  const featureSource = getEarlyAdapter().then((adapter) =>
+    adapter && parallelAssets
+      ? adapterFeatureSource(adapter)
+      : rendererPending.then(({ renderer }) => renderer),
+  );
+  const worldAssets = parallelAssets
+    ? loadWorldAssets(featureSource)
+    : rendererPending.then(({ renderer }) => loadWorldAssets(renderer));
+  // Failures surface where createWorld awaits these
+  worldAssets.catch(() => {});
+
+  const { renderer } = await rendererPending;
 
   loaderOverlay.setProgress(0.2);
   loaderOverlay.setStatus("LINKING WEBGPU");
@@ -84,6 +104,7 @@ async function init(loaderOverlay) {
     camera,
     loaderOverlay,
     requestShadowMapUpdate,
+    assets: worldAssets,
   });
 
   const envMapBaseIntensity = { value: 0.08 };
@@ -115,6 +136,7 @@ async function init(loaderOverlay) {
     smoke: world.smoke,
   });
   const post = pipeline.post;
+  world.ground?.useSceneContext?.(pipeline.scenePass);
 
   const storedLookPreset = getStoredLookPreset();
   const initialLookPreset =
@@ -202,6 +224,9 @@ async function init(loaderOverlay) {
     world,
     camera,
     controls: cameraDirector.controls,
+    walkControls: cameraDirector.walkControls,
+    renderer,
+    pipeline,
   });
   attachDevPerf(devApp, performanceTools.perfApi);
 
@@ -244,26 +269,11 @@ async function init(loaderOverlay) {
     syncLighting: lighting.syncLighting,
     requestShadowMapUpdate,
     renderer,
-    scene,
     pipeline,
     camera,
     world,
     post,
   });
-
-  const deferredCompile = compileDeferredStartup({
-    renderer,
-    scene,
-    pipeline,
-    camera,
-    world,
-  }).catch((error) => {
-    console.warn("[warmup] Deferred shader compile failed:", error);
-  });
-
-  if (shouldCompileBeforeRenderLoop()) {
-    await deferredCompile;
-  }
 
   renderLoop.startLoop();
 
@@ -280,10 +290,6 @@ async function init(loaderOverlay) {
   });
 
   await introFlow.run();
-
-  if (!shouldCompileBeforeRenderLoop()) {
-    await deferredCompile;
-  }
 
   // Inspector attaches only via Development Mode (never on load).
   inspectorSession.bootstrapInspector(appShell.settingsPanel);

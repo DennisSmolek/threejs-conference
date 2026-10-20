@@ -111,8 +111,8 @@ function createCarCollider(car) {
   return collider;
 }
 
-export async function loadQuadraCar(renderer) {
-  const gltfLoader = getGltfLoader(renderer);
+export async function loadQuadraCar(featureSource) {
+  const gltfLoader = getGltfLoader(featureSource);
   const gltf = await gltfLoader.loadAsync(QUADRA_PATH);
   const car = gltf.scene;
 

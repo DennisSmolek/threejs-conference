@@ -43,8 +43,8 @@ function prepareBoundsCollider(root) {
   return root;
 }
 
-export async function loadCityModel(renderer) {
-  const gltfLoader = getGltfLoader(renderer);
+export async function loadCityModel(featureSource) {
+  const gltfLoader = getGltfLoader(featureSource);
   const [cityGltf, colliderGltf] = await Promise.all([
     gltfLoader.loadAsync(CITY_PATH),
     gltfLoader.loadAsync(BOUNDS_COLLIDER_PATH),

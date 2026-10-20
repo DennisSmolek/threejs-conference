@@ -1,19 +1,25 @@
 import * as THREE from "three/webgpu";
 import { getStaticPixelRatio } from "../platform/performanceProfile.js";
+import { isSafari } from "../platform/deviceLayout.js";
 import {
   clearInspectorLayout,
   disableRendererTimestamps,
 } from "../debug/inspectorControls.js";
+import { installDeterministicWgsl } from "../runtime/shaderCompile/deterministicWgsl.js";
+import {
+  installErrorScopeFix,
+  installSlidingCompileWindow,
+} from "../runtime/shaderCompile/compileWindow.js";
+import { installAsyncRenderPipelines } from "../runtime/shaderCompile/asyncRenderPipelines.js";
+import { installNodeBuildProbe } from "../debug/nodeBuildProbe.js";
+import { getEarlyAdapter } from "./earlyAdapter.js";
 
 async function getWebGPULimits() {
   if (!navigator.gpu) {
     return {};
   }
 
-  const adapter = await navigator.gpu.requestAdapter({
-    powerPreference: "high-performance",
-    featureLevel: "compatibility",
-  });
+  const adapter = await getEarlyAdapter();
   if (!adapter) {
     return {};
   }
@@ -55,8 +61,16 @@ export async function createRenderer() {
 
   await renderer.init();
   disableRendererTimestamps(renderer);
+  if (renderer.backend.isWebGPUBackend) {
+    installDeterministicWgsl(renderer);
+    installErrorScopeFix(renderer);
+    // Safari WebGPU freezes under concurrent compiles + passes: keep it serial there
+    installSlidingCompileWindow(renderer, isSafari() ? 1 : undefined);
+    installAsyncRenderPipelines(renderer);
+  }
 
   if (import.meta.env.DEV) {
+    installNodeBuildProbe(renderer);
     const backend = renderer.backend.isWebGLBackend
       ? "WebGL2 (fallback)"
       : "WebGPU";

@@ -128,6 +128,17 @@
         "keywords": "WebGPU, Three.js, TSL, cyberpunk, rainy scene, Anderson Mancini, Sunag"
       }
     </script>
+    <script>
+      // Bringing up WebGPU takes seconds in a fresh browser: start it while the app downloads
+      // (same options as src/bootstrap/earlyAdapter.js and three's WebGPUBackend)
+      window.__gpuAdapter = navigator.gpu
+        ? navigator.gpu
+            .requestAdapter({ powerPreference: "high-performance", featureLevel: "compatibility" })
+            .catch(function () {
+              return null;
+            })
+        : null;
+    </script>
   </head>
   <body>
     <noscript>
