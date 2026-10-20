@@ -1,10 +1,23 @@
-export function createDevAppApi({ scene, world, camera, controls }) {
+export function createDevAppApi({
+  scene,
+  world,
+  camera,
+  controls,
+  walkControls = null,
+  renderer = null,
+  pipeline = null,
+}) {
   if (!import.meta.env.DEV) {
     return null;
   }
 
   window.__app = {
     scene,
+    camera,
+    walkControls,
+    renderer,
+    pipeline,
+    world,
     city: world.city,
     quadraCar: world.car,
     ground: world.ground,

@@ -1,75 +1,45 @@
 /**
- * Startup shader warmup split into:
- * - Critical path (blocks loader at 100% + "assembling" status): city / car / ground /
- *   sky via beauty camera. Progress hits 100 early so the long compile does not look stuck.
- * - Deferred (runs after the loop starts, during intro): rain, smoke, planes
+ * Startup shader warmup. Runs behind the loader ("ASSEMBLING SECTOR") before the render loop starts.
  *
- * Same idea as three.js webgpu_compile_async — pay compile cost off the first visible
- * hitch — but only block the loader on what must be ready for the first frame.
+ * Every material is compiled asynchronously in each render context that will draw it, so the first
+ * visible frames create no pipelines on the render path (a sync pipeline blocks Chrome's GPU
+ * process: on Windows each heavy shader is a frozen frame):
+ *   - scene passes (post scenePass / aoPrePass): own MRT target, pinned call depth
+ *   - ground mirror: half-float target, no MRT, depth 0
+ *   - warm frames for every post output variant (steady + intro glass), with every remaining
+ *     render-path miss created async (asyncRenderPipelines.js): post quads, shadow map,
+ *     collision-height override pass, transparent double-sided back/front passes. ENTER then
+ *     only swaps the final quad onto programs that already exist.
+ * Rain, smoke and planes are compiled here too (they used to be deferred into the intro, where the
+ * deferred compile warmed the wrong context and they compiled synchronously on first draw).
+ *
+ * Compute kernels stay synchronous (no async compute path in 0.185): three small ones.
  */
 
 import { collectCollisionHideObjects } from "../world/weather/collisionHideObjects.js";
+import { compilePassNode } from "./shaderCompile/compileWindow.js";
+import { renderUntilPipelinesReady } from "./shaderCompile/asyncRenderPipelines.js";
 
-function collectDeferredObjects(world) {
-  const objects = [];
-
-  if (world?.rain?.group) {
-    objects.push(world.rain.group);
+function renderWarmFrame({ world, pipeline, post, renderer, camera }) {
+  world.collisionHeight?.update({
+    camera,
+    hideObjects: collectCollisionHideObjects(world),
+  });
+  world.rain?.update(1 / 60, camera);
+  world.ground?.update?.(1 / 60);
+  const rainEnabled = world.rain?.params?.enabled ?? false;
+  world.ground?.setRippleAmount?.(rainEnabled ? 1 : 0);
+  const carRainActive = world.carSurfaceRain?.syncProximity({
+    camera,
+    carRoot: world.car,
+    rainEnabled,
+  });
+  if (carRainActive) {
+    world.carSurfaceRain.update(1 / 60);
   }
-
-  if (world?.planes?.group) {
-    objects.push(world.planes.group);
-  }
-
-  if (world?.smoke?.emitters) {
-    for (const emitter of world.smoke.emitters) {
-      if (emitter?.mesh) {
-        objects.push(emitter.mesh);
-      }
-    }
-  }
-
-  return objects;
-}
-
-function setObjectsVisible(objects, visible) {
-  for (const object of objects) {
-    object.visible = visible;
-  }
-}
-
-async function warmPostFrames({
-  world,
-  pipeline,
-  post,
-  renderer,
-  camera,
-  frames,
-  includeReflection,
-}) {
-  for (let i = 0; i < frames; i += 1) {
-    world.collisionHeight?.update({
-      camera,
-      hideObjects: collectCollisionHideObjects(world),
-    });
-    world.rain?.update(1 / 60, camera);
-    world.ground?.update?.(1 / 60);
-    const rainEnabled = world.rain?.params?.enabled ?? false;
-    world.ground?.setRippleAmount?.(rainEnabled ? 1 : 0);
-    const carRainActive = world.carSurfaceRain?.syncProximity({
-      camera,
-      carRoot: world.car,
-      rainEnabled,
-    });
-    if (carRainActive) {
-      world.carSurfaceRain.update(1 / 60);
-    }
-    if (includeReflection) {
-      world.ground?.updateReflection?.(renderer, camera);
-    }
-    pipeline.syncCameras?.(camera);
-    post.render();
-  }
+  world.ground?.updateReflection?.(renderer, camera);
+  pipeline.syncCameras?.(camera);
+  post.render();
 }
 
 export async function finalizeStartupLighting({
@@ -77,7 +47,6 @@ export async function finalizeStartupLighting({
   syncLighting,
   requestShadowMapUpdate,
   renderer,
-  scene,
   pipeline,
   camera,
   world,
@@ -89,56 +58,48 @@ export async function finalizeStartupLighting({
   syncLighting();
   requestShadowMapUpdate?.("startup-lighting");
 
-  const deferredObjects = collectDeferredObjects(world);
-  const beautyCamera = pipeline.beautyCamera ?? camera;
-
   // Assets are in — show 100% and a phase label while shaders compile (can take seconds).
   loaderOverlay.setProgress(1);
   loaderOverlay.setStatus("ASSEMBLING SECTOR");
   world.ground?.syncReflectionSize?.(renderer);
+  pipeline.syncCameras?.(camera);
 
-  // Hide rain / smoke / planes so beauty compile only builds core pipelines.
-  setObjectsVisible(deferredObjects, false);
-  try {
-    await renderer.compileAsync(scene, beautyCamera);
-
-    // One post frame compiles the RenderPipeline graph; reflection + rain wait for deferred.
-    await warmPostFrames({
-      world,
-      pipeline,
-      post,
-      renderer,
-      camera,
-      frames: 1,
-      includeReflection: false,
-    });
-  } finally {
-    setObjectsVisible(deferredObjects, true);
-  }
-}
-
-export async function compileDeferredStartup({
-  renderer,
-  scene,
-  pipeline,
-  camera,
-  world,
-}) {
-  const beautyCamera = pipeline.beautyCamera;
-  if (!beautyCamera) {
-    return;
-  }
-
-  world?.collisionHeight?.update({
+  // Rain buffers and instance state exist before the rain mesh is compiled
+  world.collisionHeight?.update({
     camera,
     hideObjects: collectCollisionHideObjects(world),
   });
-  world?.rain?.update(0, camera);
+  world.rain?.update(0, camera);
 
-  // Smoke / planes / rain were skipped on the critical path — compile them now.
-  await renderer.compileAsync(scene, beautyCamera);
+  for (const passNode of pipeline.scenePasses ?? []) {
+    await compilePassNode(renderer, passNode);
+  }
+  await world.ground?.warmReflection?.(renderer);
 
-  if (pipeline.rainCamera) {
-    await renderer.compileAsync(scene, pipeline.rainCamera);
+  // Post quads have no compileAsync path: render each output variant until its frame needs no
+  // new pipeline, ending on the variant the intro shows.
+  const variants = [];
+  pipeline.forEachOutputVariant((selectVariant) => variants.push(selectVariant));
+  for (const selectVariant of variants) {
+    selectVariant();
+    requestShadowMapUpdate?.("startup-warm");
+    await renderUntilPipelinesReady(() =>
+      renderWarmFrame({ world, pipeline, post, renderer, camera }),
+    );
+  }
+
+  // The sun's shadow map is static (autoUpdate off): its startup render leaves the flying planes
+  // out, as before, or a moving plane's shadow would be frozen into it.
+  const planesGroup = world.planes?.group ?? null;
+  const planesVisible = planesGroup?.visible ?? false;
+  if (planesGroup) {
+    planesGroup.visible = false;
+  }
+  requestShadowMapUpdate?.("startup-final");
+  await renderUntilPipelinesReady(() =>
+    renderWarmFrame({ world, pipeline, post, renderer, camera }),
+  );
+  if (planesGroup) {
+    planesGroup.visible = planesVisible;
   }
 }

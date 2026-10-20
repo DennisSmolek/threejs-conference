@@ -63,8 +63,11 @@ export function createIntroFlow({
       },
     });
 
-    await revealCanvas();
+    // The title sits centred under the loader's opening circle: start it with the reveal instead
+    // of after it, so ENTER is ready ~0.9 s sooner
+    const revealed = revealCanvas();
     introOverlay.playEnter();
+    await revealed;
   }
 
   async function enterAppWithoutIntro() {

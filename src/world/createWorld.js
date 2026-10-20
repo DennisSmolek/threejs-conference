@@ -54,23 +54,19 @@ function buildFocusTargets({ city, car, ground, billboards }) {
   return targets;
 }
 
-export async function createWorld({
-  scene,
-  renderer,
-  camera = null,
-  loaderOverlay,
-  requestShadowMapUpdate,
-}) {
-  loaderOverlay.setProgress(0.35);
-  loaderOverlay.setStatus("STREAMING MESHES");
-
+/**
+ * Starts the city, billboard, car and environment loads. Needs no renderer: `featureSource` (the
+ * renderer, or a promise of the WebGPU adapter's features) is only read by the first KTX2 transcode,
+ * so this can run while the renderer is still starting.
+ */
+export function loadWorldAssets(featureSource) {
   const loadTasks = [];
 
   if (FEATURES.city) {
-    loadTasks.push(loadCityModel(renderer));
+    loadTasks.push(loadCityModel(featureSource));
     loadTasks.push(
       performanceProfile.billboardsEnabled
-        ? loadBillboards(renderer)
+        ? loadBillboards(featureSource)
         : Promise.resolve(null),
     );
   } else {
@@ -79,15 +75,29 @@ export async function createWorld({
   }
 
   if (FEATURES.car) {
-    loadTasks.push(loadQuadraCar(renderer));
+    loadTasks.push(loadQuadraCar(featureSource));
   } else {
     loadTasks.push(Promise.resolve(null));
   }
 
   loadTasks.push(loadEnvironmentMap());
 
+  return Promise.all(loadTasks);
+}
+
+export async function createWorld({
+  scene,
+  renderer,
+  camera = null,
+  loaderOverlay,
+  requestShadowMapUpdate,
+  assets = null,
+}) {
+  loaderOverlay.setProgress(0.35);
+  loaderOverlay.setStatus("STREAMING MESHES");
+
   const [cityResult, billboards, quadra, envTexture] =
-    await Promise.all(loadTasks);
+    await (assets ?? loadWorldAssets(renderer));
   const city = cityResult?.city ?? null;
   const boundsCollider = cityResult?.boundsCollider ?? null;
   const quadraCar = quadra?.car ?? null;

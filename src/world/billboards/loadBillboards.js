@@ -3,8 +3,8 @@ import { CITY_OFFSET_Y } from "../city/loadCity.js";
 
 const BILLBOARDS_PATH = "/models/billboards.glb";
 
-export async function loadBillboards(renderer) {
-  const gltfLoader = getGltfLoader(renderer);
+export async function loadBillboards(featureSource) {
+  const gltfLoader = getGltfLoader(featureSource);
   const gltf = await gltfLoader.loadAsync(BILLBOARDS_PATH);
   const billboards = gltf.scene;
 

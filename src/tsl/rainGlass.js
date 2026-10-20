@@ -27,6 +27,9 @@ import { gaussianBlur } from "three/addons/tsl/display/GaussianBlurNode.js";
 
 // Port of rocksdanister/rain DropLayer (via MovingDropLayer),
 // https://github.com/rocksdanister/rain
+//
+// Helpers have layouts so each is one WGSL function: inlined, the 3 Drops calls of the
+// finite-difference normal copied 6 MovingDropLayer + 3 StaticDrops bodies into the intro quad.
 
 const N13 = /*#__PURE__*/ Fn(([p]) => {
   const p3 = fract(vec3(p, p, p).mul(vec3(0.1031, 0.11369, 0.13787)));
@@ -38,13 +41,33 @@ const N13 = /*#__PURE__*/ Fn(([p]) => {
       p3Dot.y.add(p3Dot.z).mul(p3Dot.x),
     ),
   );
+}).setLayout({
+  name: "RainGlassN13",
+  type: "vec3",
+  inputs: [
+    { name: "p", type: "float" },
+  ],
 });
 
-const N = /*#__PURE__*/ Fn(([t]) => fract(sin(t.mul(12345.564)).mul(7658.76)));
+const N = /*#__PURE__*/ Fn(([t]) => fract(sin(t.mul(12345.564)).mul(7658.76))
+).setLayout({
+  name: "RainGlassN",
+  type: "float",
+  inputs: [
+    { name: "t", type: "float" },
+  ],
+});
 
 const Saw = /*#__PURE__*/ Fn(([b, t]) =>
   smoothstep(float(0), b, t).mul(smoothstep(float(1), b, t)),
-);
+).setLayout({
+  name: "RainGlassSaw",
+  type: "float",
+  inputs: [
+    { name: "b", type: "float" },
+    { name: "t", type: "float" },
+  ],
+});
 
 /**
  * Sliding drop + vertical trail (rocksdanister MovingDropLayer).
@@ -106,6 +129,14 @@ const MovingDropLayer = /*#__PURE__*/ Fn(([uvIn, t, size]) => {
   const mask = m.add(trail.mul(0.35));
 
   return vec2(mask, edge);
+}).setLayout({
+  name: "RainGlassMovingDropLayer",
+  type: "vec2",
+  inputs: [
+    { name: "uvIn", type: "vec2" },
+    { name: "t", type: "float" },
+    { name: "size", type: "float" },
+  ],
 });
 
 const StaticDrops = /*#__PURE__*/ Fn(([uvIn, t, size]) => {
@@ -119,6 +150,14 @@ const StaticDrops = /*#__PURE__*/ Fn(([uvIn, t, size]) => {
   return pow(smoothstep(float(0.4).mul(size), float(0), d), float(1.8))
     .mul(fract(n.z.mul(10)))
     .mul(fade);
+}).setLayout({
+  name: "RainGlassStaticDrops",
+  type: "float",
+  inputs: [
+    { name: "uvIn", type: "vec2" },
+    { name: "t", type: "float" },
+    { name: "size", type: "float" },
+  ],
 });
 
 const Drops = /*#__PURE__*/ Fn(([uv, t, l0, l1, l2, size]) => {
@@ -128,6 +167,17 @@ const Drops = /*#__PURE__*/ Fn(([uv, t, l0, l1, l2, size]) => {
 
   const c = smoothstep(float(0.3), float(1), s.add(m1.x).add(m2.x));
   return vec2(c, max(m1.y.mul(l0), m2.y.mul(l1)));
+}).setLayout({
+  name: "RainGlassDrops",
+  type: "vec2",
+  inputs: [
+    { name: "uv", type: "vec2" },
+    { name: "t", type: "float" },
+    { name: "l0", type: "float" },
+    { name: "l1", type: "float" },
+    { name: "l2", type: "float" },
+    { name: "size", type: "float" },
+  ],
 });
 
 export function createRainGlassUniforms() {

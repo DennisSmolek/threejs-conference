@@ -109,15 +109,18 @@ export async function createCollisionRain({
   const splashPositionBuffer = instancedArray(activeCount, "vec3");
   const splashCycleBuffer = instancedArray(activeCount, "uint");
 
-  const randUint = () => uint(Math.random() * 0xffffff);
+  // Per-session seeds as uniforms: a literal would change the WGSL every load (shader cache miss).
+  const randUint = () => uniform(Math.floor(Math.random() * 0xffffff), "uint");
+  const uSeedY = randUint();
+  const uSeedZ = randUint();
 
   const computeInit = Fn(() => {
     const position = positionBuffer.element(instanceIndex);
     const velocity = velocityBuffer.element(instanceIndex);
 
     const randX = hash(instanceIndex);
-    const randY = hash(instanceIndex.add(randUint()));
-    const randZ = hash(instanceIndex.add(randUint()));
+    const randY = hash(instanceIndex.add(uSeedY));
+    const randZ = hash(instanceIndex.add(uSeedZ));
 
     const centerPos = uCameraPos.add(uCameraDir.mul(uCameraForwardOffset));
 
@@ -380,6 +383,12 @@ export async function createCollisionRain({
     syncVisibility();
   }
 
+  // Respawns every drop from its seeded hash around the camera (deterministic captures, resets)
+  function resetParticles(camera) {
+    syncCameraUniforms(camera);
+    renderer.compute(computeInit);
+  }
+
   function setDropCount(value) {
     const nextCount = Math.max(500, Math.min(MAX_COUNT, Math.round(value)));
     params.count = nextCount;
@@ -471,6 +480,7 @@ export async function createCollisionRain({
     params,
     update,
     setEnabled,
+    resetParticles,
     setDropCount,
     setOpacity,
     setIntensity,

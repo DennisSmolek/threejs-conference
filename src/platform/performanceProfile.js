@@ -79,10 +79,6 @@ export function applyDevicePerformanceDefaults() {
   }
 }
 
-export function shouldCompileBeforeRenderLoop() {
-  return isSafari();
-}
-
 export function getStaticPixelRatio() {
   return Math.min(window.devicePixelRatio, performanceProfile.maxPixelRatio);
 }
